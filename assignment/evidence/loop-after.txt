@@ -1,0 +1,107 @@
+mininet>    sh grep -c "Processing packet received" logs/s1.txt logs/s2.txt
+logs/s1.txt:1505
+logs/s2.txt:1501
+mininet> 
+mininet> sh ./p4cli s2 table_dump MyIngress.myTunnel_exact
+Done
+==========
+TABLE ENTRIES
+**********
+Dumping entry 0x0
+Match key:
+* myTunnel.dst_id     : EXACT     0001
+Action entry: MyIngress.myTunnel_forward - 01
+**********
+Dumping entry 0x1
+Match key:
+* myTunnel.dst_id     : EXACT     0002
+Action entry: MyIngress.myTunnel_forward - 02
+**********
+Dumping entry 0x2
+Match key:
+* myTunnel.dst_id     : EXACT     0003
+Action entry: MyIngress.myTunnel_forward - 03
+==========
+Dumping default entry
+Action entry: MyIngress.drop - 
+==========
+mininet> 
+mininet> sh ./p4cli s2 "table_modify MyIngress.myTunnel_exact MyIngress.myTunnel_forward 2 1"
+Done
+Modifying entry 2 for exact match table MyIngress.myTunnel_exact
+mininet> 
+mininet> sh ./p4cli s2 table_dump MyIngress.myTunnel_exact
+Done
+==========
+TABLE ENTRIES
+**********
+Dumping entry 0x0
+Match key:
+* myTunnel.dst_id     : EXACT     0001
+Action entry: MyIngress.myTunnel_forward - 01
+**********
+Dumping entry 0x1
+Match key:
+* myTunnel.dst_id     : EXACT     0002
+Action entry: MyIngress.myTunnel_forward - 02
+**********
+Dumping entry 0x2
+Match key:
+* myTunnel.dst_id     : EXACT     0003
+Action entry: MyIngress.myTunnel_forward - 01
+==========
+Dumping default entry
+Action entry: MyIngress.drop - 
+==========
+mininet> 
+mininet> h1 python3 send.py 10.8.0.3 "loop" --tunnel 3
+###[ Ethernet ]### 
+  dst       = ff:ff:ff:ff:ff:ff
+  src       = 00:00:00:00:00:01
+  type      = 0x1212
+###[ MyTunnel ]### 
+     proto_id  = 2048
+     dst_id    = 3
+     hop_limit = 8
+###[ IP ]### 
+        version   = 4
+        ihl       = 5
+        tos       = 0x0
+        len       = 32
+        id        = 1
+        flags     = 
+        frag      = 0
+        ttl       = 64
+        proto     = udp
+        chksum    = 0x66b9
+        src       = 10.8.0.1
+        dst       = 10.8.0.3
+        \options   \
+###[ UDP ]### 
+           sport     = 4321
+           dport     = 4321
+           len       = 12
+           chksum    = 0xee20
+###[ Raw ]### 
+              load      = 'loop'
+
+Sent from h1-eth0.
+mininet> 
+mininet> sh sleep 2; grep -c "Processing packet received" logs/s1.txt logs/s2.txt
+logs/s1.txt:1510
+logs/s2.txt:1505
+mininet> 
+mininet> sh sleep 5; grep -c "Processing packet received" logs/s1.txt logs/s2.txt
+logs/s1.txt:1510
+logs/s2.txt:1505
+mininet> 
+mininet> sh grep -c "hop_limit == 0" logs/s1.txt
+19
+mininet> 
+mininet> sh grep "hop_limit == 0" logs/s1.txt | tail -5
+[20:36:36.660] [bmv2] [T] [thread 28190] [0.0] [cxt 0] tunnel.p4(127) Condition "hdr.myTunnel.hop_limit == 0" (node_3) is false
+[20:36:36.665] [bmv2] [T] [thread 28190] [1.0] [cxt 0] tunnel.p4(127) Condition "hdr.myTunnel.hop_limit == 0" (node_3) is false
+[20:36:36.672] [bmv2] [T] [thread 28190] [2.0] [cxt 0] tunnel.p4(127) Condition "hdr.myTunnel.hop_limit == 0" (node_3) is false
+[20:36:36.675] [bmv2] [T] [thread 28190] [3.0] [cxt 0] tunnel.p4(127) Condition "hdr.myTunnel.hop_limit == 0" (node_3) is false
+[20:36:36.681] [bmv2] [T] [thread 28190] [4.0] [cxt 0] tunnel.p4(127) Condition "hdr.myTunnel.hop_limit == 0" (node_3) is true
+mininet> 
