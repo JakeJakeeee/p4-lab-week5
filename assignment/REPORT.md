@@ -1,56 +1,37 @@
 # Week 5 assignment — Put a limit on the tunnel
 
-Student ID (last 4 digits only): **NNNN**
+Student ID (last 4 digits only): **9808**
 
 Write each section in your own words, about your own runs. Quote the evidence files in
 `assignment/evidence/` that support each point. Delete the instructions in `<!-- -->` as you go.
 
 ## 1. Analysis: the loop
+I made the tunnel loop by changing one of the entry on s2. First I check the forwarding rules in s2 first, I found that the entry for "dst_id 3" had handle "2". Then I changed the outgoing port for traffic "dst_id 3" from port 3 to 1 with command "sh ./p4cli s2 "table_modify MyIngress.myTunnel_exact MyIngress.myTunnel_forward 2 1" ". As s1 has a forwarding rule send the traffic "dst_id 3" to s2, so s2 and s1 will keep sending the traffic back and forth with packet that has "dst_id 3", and it form a loop. I sent one packet with command "h1 python3 send.py 10.8.0.3 "loop2" --tunnel 3". Then by checking the log with command "sh grep -c "Processing packet received" logs/s1.txt logs/s2.txt" and "sh sleep 5; grep -c "Processing packet received" logs/s1.txt logs/s2.txt" , I saw that the "Processing packet received" went from 1242 to 1561 on s1 and from 1242 to 1562 on s2 in five seconds, and it kept growing, the loop never stopped by itself. The IPv4 TTL does not stop a loop in this program. ipv4_forward runs hdr.ipv4.ttl = hdr.ipv4.ttl - 1, but nothing in the program ever checks the TTL, so there is no rule to drop the packet when it reaches 0. Because ttl is bit<8>, subtracting 1 from 0 wraps around to 255, and the countdown starts again, so an IPv4 loop would never end. Also, tunnel packets have even less protection because they use myTunnel_exact, and myTunnel_forward only sets the port, so the TTL is never touched.
 
-<!-- How did you create the tunnel loop (which entry, on which switch, which commands)?
-     What did the switch logs show over time, with numbers from loop-before.txt?
-     Then look at the IPv4 path in tunnel.p4: it decrements the TTL. Does that stop an IPv4
-     loop in this program? Check the code, and explain what happens when TTL reaches 0. -->
 
 ## 2. Design: the hop limit
-
-<!-- Your header change and your pipeline change, and the reason for each choice:
-     - the field's size, and where in the header you put it (and why there);
-     - the starting value send.py uses, and how you chose it;
-     - where it's decremented, and what happens when it runs out;
-     - what else had to change for every part of the path to agree (parser, deparser, hosts). -->
+In my design, i added 8 bit field called "hop_limit" at the end of the tunnel header. In the lab scenario, a smaller field would be enought for the 2- switch path, but i set it as 8 bit because the i want to make the header field fill with whole bytes. I put it last in the header, and "proto_id" and "dst_id" stay in the same position. The new field add one more bytes from previous one, and so total 5 bytes for the new field. I set the start values at 8 in "send.py". Currently the path is from h1 to s1 to s2 to h2 crosses 2 switches, so the value must be at least 2, else a valid packets would be dropped. I chose 8 in my lab to have more spaces if ading more path in future. The hop limit is handled in the ingress, on the tunnel branch, before myTunnel_exact is applied. The switch checks first, then subtracts. If hop_limit is 0, the packet is dropped. if not. it will subtracted by 1 and the table is applied. I check first because the field is unsigned, so subtracting from 0 would wrap around to 255 and the packet would never be dropped. With a start value of 8, a packet is forwarded 8 times and dropped on the 9th pass. The parser and deparser did not need any change, because extract and emit read and write the whole header, so they handle the new field automatically. The change I made is on the host in send.py and receive.py. Each have their own copy of the tunnel header in Scapy, so I added hop_limit there, in the same order and size as the switch (16, 16 and 8 bits). If the hosts and switches disagree about the header, the bytes are read in the wrong place, and packets are misread or dropped.
 
 ## 3. Implementation
+In tunnel.p4, I added bit<8> hop_limit to the tunnel header. Then I changed the ingress logic in the apply block. When a packet has a valid tunnel header, the switch first checks the hop limit. If it is 0, the packet is dropped. Otherwise, the switch subtracts 1 from the hop limit and then applies the table. I did not change the parser, deparser or tables, because they handle the whole header and pick up the new field by themselves. In send.py and receive.py, I changed the host side, so that the hosts use the same tunnel header as the switch. send.py builds the packet, so I added hop_limit to its tunnel header and a --hops option to set the starting value, here i set it "8". receive.py reads the packet, so I added hop_limit to its tunnel header too, and made it print the value that arrives. Then, the check for 0 comes before the subtraction on purpose. The hop limit cannot go below 0, so subtracting 1 from 0 would wrap around to 255, and the packet would never be dropped. Also, the hosts and the switch must use the same header layout (16, 16 and 8 bits), or they would read the bytes in the wrong places.
 
-<!-- Summarise what you changed in tunnel.p4, send.py and receive.py. The pull request shows
-     the code itself: here, explain anything a reviewer might not see from the diff alone. -->
 
 ## 4. Evidence: it works
-
-<!-- Show, with your evidence files:
-     - tunnelled delivery to h2 and h3, and the hop limit the receivers saw (delivery.txt);
-     - plain IPv4 still works (delivery.txt);
-     - the same loop as in section 1 now ends, and after how many passes — does that match
-       your design? (loop-after.txt) -->
+In "delivery.txt": I sent tunnelled packets to h2 and h3. Both logs show hop_limit=6, so each of the two switches subtracted 1, and I set the starting is 8 so this logs show correctly that the packet crossed 2 switches and each one subtracted 1. The IP TTL stayed at 64 because the tunnel path does not touch it. A plain h1 ping -c 2 h3 worked with 0% loss and ttl=62, so IPv4 forwarding still works.
+       
+In "loop-after.txt": I repeated the loop with the same table change, whiich I check the forwarding rules on s2 first and then i change the entry for "dst_id 3" from port 3 to port 1. Before sending, I check the counts were 1505 (s1) and 1501 (s2). After sending, they were 1510 and 1505, a difference of 5 and 4, so the packet passed through the switches 9 times. The counts did not change five seconds later, so the loop ended. The log shows the check hop_limit == 0 was false four times and true on the fifth, which is the drop. This matches my design, which I set starting at 8, a packet is forwarded 8 times and dropped on the 9th pass.
 
 ## 5. Evaluation
+a. The prediction I made before sending packets is I predicted that s2 with old program would handle the packet wrongly. This is because old program havent added the hop limit, it only know the tunnel header of 4 bytes, and my new program send 5 bytes because of a "hop_limit" field is added. Therefore, s2 would read the header in the wrong way. Then, the packet will still be drop but no so fast, becasue only s1 will reduce the hop limit. Then I sent a tunnelled packet from h1 with --tunnel 2. It arrived at h2, but logs/h2.txt only showed “Listening...”, so receive.py printed nothing. The tcpdump capture proves the packet did arrive. In the capture, the hop_limit was 7, so s1 subtracted 1 and old s2 did not, because it does not know the field. Old s2 thinks the hop_limit byte is the start of the IPv4 header, so every field it reads is shifted by one byte. When it sends the packet out, it writes a new checksum into the wrong place, and this changed the protocol byte from 0x11 (UDP) to 0x0d. The packet is no longer UDP, so receive.py ignores it. The s2 log shows no error, so s2 never noticed anything wrong. In the loop, the count increase by 9 on s1 and 8 on s2 (1512 to 1521 and 1507 to 1515), so 17 passes instead of the 9 in loop-after.txt. The loop still ended, but later, because only s1 subtracts. The hop limit falls once per round trip instead of twice. My prediction was correct that s2 would read the header wrongly and that the loop would end later. However, I did not expect s2 produce no error or the packet to reach h2 with its protocol field incorrectly modified.
 
-<!-- a) The mixed rollout (mixed.txt): what did you predict before running s1 with your new
-        program and s2 with tunnel_v1.p4? What actually happened to delivery, and to the loop?
-        Explain every difference from your prediction, byte by byte if you need to.
-     b) Propose a safe way to roll out a header change across a network of switches that can't
-        all be upgraded at once. Compare at least two options (for example a version field, a
-        new EtherType, or ordering fields so old switches still parse them).
-     c) Loop protection in the data plane (this hop limit) versus the control plane (Week 3's
-        check_paths()): what can each catch that the other can't? Why do real networks use both?
-     d) What would this change cost on a hardware switch running at line rate? -->
+b. First option is add version field in the header. New switches can check the version to know how to read the packet, which makes it easier to support several header versions in the same network. But an old switch does not know the field, so it would misread the packet, and I must upgrade all the switches before the new format can be used. Another option is a new EtherType for the new header, for example 0x1213. New switches understand both the old and new types. An old switch does not recognise the new type, so it drops the packet instead of misreading it. This separates the two formats clearly, but the packets are lost until the old switch is upgraded. I would choose the new EtherType because it provides safer failure behaviour. First, I would upgrade the switches one by one with a program that supports both EtherTypes. Once all switches are upgraded, I would change the hosts to send packets using the new EtherType. If problems occur, I can switch the hosts back to the old EtherType as a rollback plan.
+
+c. check_paths() is in control plan, it checks routing tables before packets are sent. It detects missing routes and routing loops, and identifies the faulty router. However, it cannot detect changes made after the check or problems in switch programs and tunnel tables. In data plan, the hop limit is carried inside the packet and decreases at every switch. When it reaches zero, the packet is dropped, preventing it from looping forever. It can handle loops caused by incorrect entries or live updates, but only detects them after they occur. It also only protects tunnel packets. In conclusion, both methods complement each other. Control plane protection detects and helps locate loops before traffic starts, while the hop limit stops packets that are already looping. Using both provides better protection against routing loops.
+
+d. The cost is very small. For each tunnel packet, the switch does only two simple things, it checks if the hop limit is 0, and it subtracts 1 from it. It does not need a new table lookup or extra memory, so it should not slow the switch down. A normal router already does the same thing with the IPv4 TTL at full speed. There are only a few small costs. Every tunnel packet gets one byte longer, because of the new field. The check may need one extra step in the switch pipeline, since it runs before the table lookup. The IPv4 checksum is not affected, because the hop limit is not part of the IPv4 header.
 
 ## AI use
-
-<!-- This assignment is Level 3 (Open): AI use is allowed if you declare it. State which tools you
-     used (or "None") and what each did — for example "ChatGPT explained the bmv2 log format;
-     the first draft of the hop-limit check came from Copilot, which I then changed and tested".
-     Be ready to explain any part of your work yourself. -->
+I used Claude AI for this assignment. It explained concepts I did not understand, such as why the IPv4 TTL does not stop a loop, how to read the tcpdump hex dump in mixed.txt, the safe rollout options, the data plane and control plane comparison, and the hardware cost. It suggested the hop limit design and It also gave me the draft for tunnel.p4, send.py and receive.py, which I entered, compiled and tested myself. For the report, it gave me draft wording, and I rewrote the drafts in my own words and checked every number against my own evidence files. I ran all the commands myself, and the evidence files are the real output of my runs.
 
 ## Evidence files
 
